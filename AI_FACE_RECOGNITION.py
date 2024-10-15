@@ -141,7 +141,7 @@ def recognize_face(uploaded_embedding):
 def is_recognized(known_embedding, unknown_embedding, threshold=0.2):
     distance = find_euclidean_distances(known_embedding, unknown_embedding)
     similarity = find_cosine_similarity(known_embedding, unknown_embedding)
-    if distance < threshold and similarity > 0.98:
+    if distance < threshold and similarity > 0.96:
         return True  # ใกล้เคียง
     else:
         return False  # ไม่รู้จัก
