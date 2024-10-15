@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing import image
+import piexif
+
 
 # โหลดโมเดลที่บันทึกไว้
 model = load_model('ai_recognition.h5')  # ใช้ชื่อไฟล์ตรง ๆ
@@ -24,11 +26,34 @@ def load_known_embeddings(file_name):
 
 def compute_embedding(model, image_path):
     test_image = image.load_img(image_path, target_size=(150, 150))
+    # test_image = correct_image_orientation(test_image)
     test_image = image.img_to_array(test_image)
     test_image = test_image / 255.0
     test_image = np.expand_dims(test_image, axis=0)
     embedding = model.predict(test_image)
     return embedding.flatten()  # แปลงเป็นเวกเตอร์ 1 มิติ
+
+import tempfile
+
+# ฟังก์ชันเพื่อปรับหมุนภาพตามข้อมูล EXIF
+def correct_image_orientation(image_path):
+    img = Image.open(image_path)
+
+    if 'exif' in img.info:
+        exif_dict = piexif.load(img.info['exif'])
+
+        # ใช้ค่าเลขสำหรับ Orientation โดยตรง
+        orientation = exif_dict['0th'].get(274, 1)  # 274 คือเลขประจำของ Orientation
+
+        # ปรับหมุนภาพตาม Orientation
+        if orientation == 3:
+            img = img.rotate(180, expand=True)
+        elif orientation == 6:
+            img = img.rotate(270, expand=True)
+        elif orientation == 8:
+            img = img.rotate(90, expand=True)
+
+    return img
 
 def add_folder():
     folder_selected = filedialog.askdirectory()  # เปิดหน้าต่างเลือกโฟลเดอร์
@@ -42,13 +67,24 @@ def add_folder():
         for image_file in os.listdir(folder_selected):
             image_path = os.path.join(folder_selected, image_file)
 
-            try:
-                # โหลดเวกเตอร์ embedding ของรูปภาพ
-                embedding = compute_embedding(model, image_path)
-                embeddings_list.append(embedding)
-            except (IOError, OSError, ValueError) as e:
-                print(f"Skipping file {image_file}: {e}")  # แสดงข้อผิดพลาดในคอนโซล
-                continue  # ข้ามไปยังไฟล์ถัดไป
+            # ตรวจสอบว่าไฟล์เป็นภาพหรือไม่
+            if image_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                try:
+                    # ปรับหมุนภาพตาม EXIF
+                    img_corrected = correct_image_orientation(image_path)
+
+                    # สร้างไฟล์ชั่วคราวเพื่อบันทึกภาพที่ปรับหมุนแล้ว
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
+                        img_corrected.save(temp_file.name)  # บันทึกภาพลงไฟล์ชั่วคราว
+                        temp_file_path = temp_file.name  # เก็บชื่อไฟล์ชั่วคราว
+
+                    # คำนวณเวกเตอร์ embedding
+                    embedding = compute_embedding(model, temp_file_path)
+                    embeddings_list.append(embedding)
+                    
+                except (IOError, OSError, ValueError) as e:
+                    print(f"Skipping file {image_file}: {e}")  # แสดงข้อผิดพลาดในคอนโซล
+                    continue  # ข้ามไปยังไฟล์ถัดไป
 
         if embeddings_list:  # ตรวจสอบว่ามี embeddings สำหรับชื่อที่ระบุ
             # คำนวณค่าเฉลี่ยของ embeddings สำหรับใบหน้านี้
@@ -76,17 +112,28 @@ def predict_face():
     file_selected = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg")])  # เลือกไฟล์รูป
     if file_selected:
         try:
-            # โหลดและเตรียมรูปภาพ
-            uploaded_embedding = compute_embedding(model, file_selected)
-            result = recognize_face(uploaded_embedding)  # ใช้ฟังก์ชัน recognize_face ที่คุณสร้างไว้
+            # ปรับหมุนภาพตาม EXIF
+            img_corrected = correct_image_orientation(file_selected)
+
+            # สร้างไฟล์ชั่วคราวเพื่อบันทึกภาพที่ปรับหมุนแล้ว
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
+                img_corrected.save(temp_file.name)  # บันทึกภาพลงไฟล์ชั่วคราว
+                temp_file_path = temp_file.name  # เก็บชื่อไฟล์ชั่วคราว
+
+            # คำนวณ embedding จากภาพที่ปรับหมุนแล้ว
+            test_image_embedding = compute_embedding(model, temp_file_path)
+
+            # ทำการทำนาย
+            result = recognize_face(test_image_embedding)
 
             # แสดงผลการทำนาย
-            show_image_with_message(Image.open(file_selected), result)
+            show_image_with_message(img_corrected, result)
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
 
 def recognize_face(uploaded_embedding):
     for name, known_embedding_vector in known_embeddings.items():
+        print("name",name)
         if is_recognized(known_embedding_vector, uploaded_embedding):
             return f"You are {name}"
     return "Unknown person"
@@ -104,6 +151,7 @@ def find_euclidean_distances(x, y):
     y = np.array(y)
     diff = x - y
     distance = np.sqrt(np.sum(diff**2))
+    print(f"{distance:.10f}")
     return distance
 
 def find_cosine_similarity(vec1, vec2):
@@ -111,6 +159,7 @@ def find_cosine_similarity(vec1, vec2):
     norm_vec1 = np.linalg.norm(vec1)
     norm_vec2 = np.linalg.norm(vec2)
     cosine_similarity = dot_product / (norm_vec1 * norm_vec2)
+    print(f"{cosine_similarity:.10f}",)
     return cosine_similarity
 
 def show_image_with_message(img, message):
@@ -131,6 +180,8 @@ def show_image_with_message(img, message):
 
     back_button = tk.Button(button_frame, text="Back to Main Menu", command=main_menu, font=("Helvetica", 12), bg='#4CAF50', fg='white', bd=0)
     back_button.pack(pady=5, padx=10)
+
+
 
 def main_menu():
     for widget in root.winfo_children():
